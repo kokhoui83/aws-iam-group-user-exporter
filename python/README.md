@@ -6,14 +6,24 @@ Query and export AWS Group and its users to CSV using python script
 - Python 3.12.x
 
 ## Setup
-- Virtual environment
+- Create virtual environment
 ```
 # venv
 python -m venv .venv
 
 # pipenv
+pipenv --python 3.12
+```
+
+- Activate virtual envinronment
+```
+# venv
+source .venv/bin/activate
+
+# pipenv
 pipenv shell
 ```
+
 
 - Install dependencies
 ```
