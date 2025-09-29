@@ -1,7 +1,7 @@
 #!/bin/bash
 # identitystore-groups-users.sh
 # Generate CSV report of Identity Store groups and their members
-# Supports AWS_PROFILE and IDENTITY_STORE_ID env vars
+# Supports AWS_PROFILE, IDENTITY_STORE_ID env vars, reads .env file, and tracks execution time
 
 set -euo pipefail
 
@@ -36,7 +36,11 @@ if [[ -z "$IDENTITY_STORE_ID" || "$IDENTITY_STORE_ID" == "None" ]]; then
 fi
 
 OUTPUT_FILE="${OUTPUT_FILE:-identitystore-groups-users.csv}"
-echo "Group,User" > "$OUTPUT_FILE"
+GENERATED_AT=$(date +"%Y-%m-%d %H:%M:%S")
+
+# Add timestamp comment at the top of CSV
+echo "# Generated at: $GENERATED_AT" > "$OUTPUT_FILE"
+echo "Group,User" >> "$OUTPUT_FILE"
 
 # Loop through all groups
 for groupId in $(aws identitystore list-groups \
