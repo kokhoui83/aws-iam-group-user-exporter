@@ -38,9 +38,15 @@ pipenv install
 - Create `.env` file
 ```
 AWS_PROFILE=dev
-IDENTITY_STORE_ID=abcd1234-efgh-5678
+IDENTITY_STORE_ID=d-1234567890
 OUTPUT_FILE=myreport.csv
 ```
+
+**Configuration Notes:**
+- `AWS_PROFILE`: Required if not using default AWS credentials
+- `IDENTITY_STORE_ID`: **Required** - Your AWS Identity Store ID
+  - Find your ID: `aws sso-admin list-instances --query "Instances[].IdentityStoreId"`
+- `OUTPUT_FILE`: Optional, defaults to `identitystore-groups-users.csv`
 
 - Run
 ```

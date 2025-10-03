@@ -7,9 +7,48 @@ CSV columns order: AccountName, AccountId, Group, PermissionSet, User, DisplayNa
 import boto3
 import csv
 import os
+import sys
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from dotenv import load_dotenv
+from botocore.exceptions import ClientError, NoCredentialsError
+
+
+def validate_identity_store_id(sso_admin, identity_store_id):
+    """
+    Validate the provided Identity Store ID exists and return the matching instance ARN.
+    
+    Args:
+        sso_admin: AWS SSO Admin client
+        identity_store_id: Identity Store ID to validate
+        
+    Returns:
+        str: Instance ARN for the validated Identity Store
+        
+    Raises:
+        SystemExit: If validation fails
+    """
+    if not identity_store_id:
+        print("❌ IDENTITY_STORE_ID is required. Please set it in your .env file or environment.")
+        print("ℹ️ Find your Identity Store ID: aws sso-admin list-instances --query 'Instances[].IdentityStoreId'")
+        sys.exit(1)
+    
+    # Get SSO instances
+    instances = sso_admin.list_instances()
+    if not instances["Instances"]:
+        print("❌ No SSO instances found in this account.")
+        sys.exit(1)
+    
+    # Find matching instance
+    for instance in instances["Instances"]:
+        if instance["IdentityStoreId"] == identity_store_id:
+            return instance["InstanceArn"]
+    
+    # Identity Store ID not found
+    available_ids = [inst["IdentityStoreId"] for inst in instances["Instances"]]
+    print(f"❌ Identity Store ID '{identity_store_id}' not found.")
+    print(f"ℹ️ Available Identity Store IDs: {', '.join(available_ids)}")
+    sys.exit(1)
 
 
 def get_accounts(org_client):
@@ -68,12 +107,30 @@ def list_group_memberships(identitystore, identity_store_id, group_id):
         memberships.extend(page.get("GroupMemberships", []))
     return memberships
 
+def get_user_details(identitystore, identity_store_id, user_id, user_cache):
+    """Get user details with caching to avoid repeated API calls."""
+    if user_id not in user_cache:
+        try:
+            user_cache[user_id] = identitystore.describe_user(
+                IdentityStoreId=identity_store_id,
+                UserId=user_id,
+            )
+        except ClientError as e:
+            print(f"⚠️ Warning: Could not fetch user details for {user_id}: {e}")
+            user_cache[user_id] = {
+                "UserName": f"Unknown-{user_id}",
+                "DisplayName": "Unknown User",
+                "Emails": []
+            }
+    return user_cache[user_id]
 
 def generate_report(identitystore, groups, group_permission_map, identity_store_id, output_file):
     """
     Generate the CSV file with group memberships and permissions.
     Multiple permission sets per user/group are concatenated as a comma-separated string.
     """
+    user_cache = {}
+    
     fieldnames = [
         "AccountName",
         "AccountId",
@@ -103,10 +160,7 @@ def generate_report(identitystore, groups, group_permission_map, identity_store_
                 user_permissions.setdefault((acct_name, acct_id), []).append(ps_name)
 
             for membership in memberships:
-                user = identitystore.describe_user(
-                    IdentityStoreId=identity_store_id,
-                    UserId=membership["MemberId"]["UserId"],
-                )
+                user = get_user_details(identitystore, identity_store_id, membership["MemberId"]["UserId"], user_cache)
 
                 user_name = user.get("UserName", "")
                 display_name = user.get("DisplayName", "")
@@ -146,44 +200,48 @@ if __name__ == "__main__":
 
     start_time = time.time()
 
-    # boto3 session
-    session_args = {}
-    if AWS_PROFILE:
-        session_args["profile_name"] = AWS_PROFILE
-        print(f"ℹ️ Using AWS profile: {AWS_PROFILE}")
+    try:
+        # boto3 session
+        session_args = {}
+        if AWS_PROFILE:
+            session_args["profile_name"] = AWS_PROFILE
+            print(f"ℹ️ Using AWS profile: {AWS_PROFILE}")
 
-    session = boto3.Session(**session_args)
-    sso_admin = session.client("sso-admin")
-    identitystore = session.client("identitystore")
-    org = session.client("organizations")
+        session = boto3.Session(**session_args)
+        sso_admin = session.client("sso-admin")
+        identitystore = session.client("identitystore")
+        org = session.client("organizations")
 
-    # Detect Identity Store ID if not provided
-    if not IDENTITY_STORE_ID:
-        instances = sso_admin.list_instances()
-        if not instances["Instances"]:
-            raise RuntimeError("❌ No SSO instances found. Please set IDENTITY_STORE_ID.")
-        IDENTITY_STORE_ID = instances["Instances"][0]["IdentityStoreId"]
-        INSTANCE_ARN = instances["Instances"][0]["InstanceArn"]
-    else:
-        instances = sso_admin.list_instances()
-        INSTANCE_ARN = instances["Instances"][0]["InstanceArn"]
+        # Validate Identity Store ID and get Instance ARN
+        INSTANCE_ARN = validate_identity_store_id(sso_admin, IDENTITY_STORE_ID)
 
-    print(f"ℹ️ Using Identity Store ID: {IDENTITY_STORE_ID}")
-    print(f"ℹ️ Using Instance ARN: {INSTANCE_ARN}")
+        print(f"ℹ️ Using Identity Store ID: {IDENTITY_STORE_ID}")
+        print(f"ℹ️ Using Instance ARN: {INSTANCE_ARN}")
 
-    accounts = get_accounts(org)
-    print(f"ℹ️ Found {len(accounts)} AWS accounts")
+        accounts = get_accounts(org)
+        print(f"ℹ️ Found {len(accounts)} AWS accounts")
 
-    permission_sets = get_permission_sets(sso_admin, INSTANCE_ARN)
-    print(f"ℹ️ Found {len(permission_sets)} permission sets")
+        permission_sets = get_permission_sets(sso_admin, INSTANCE_ARN)
+        print(f"ℹ️ Found {len(permission_sets)} permission sets")
 
-    group_permission_map = get_group_assignments(sso_admin, INSTANCE_ARN, accounts, permission_sets)
+        group_permission_map = get_group_assignments(sso_admin, INSTANCE_ARN, accounts, permission_sets)
 
-    groups = list_all_groups(identitystore, IDENTITY_STORE_ID)
-    print(f"ℹ️ Found {len(groups)} groups")
+        groups = list_all_groups(identitystore, IDENTITY_STORE_ID)
+        print(f"ℹ️ Found {len(groups)} groups")
 
-    generate_report(identitystore, groups, group_permission_map, IDENTITY_STORE_ID, OUTPUT_FILE)
+        # Initialize user cache for performance optimization
+        generate_report(identitystore, groups, group_permission_map, IDENTITY_STORE_ID, OUTPUT_FILE)
 
-    elapsed = timedelta(seconds=round(time.time() - start_time))
-    print(f"✅ Report generated: {OUTPUT_FILE}")
-    print(f"⏱ Time taken: {elapsed}")
+        elapsed = timedelta(seconds=round(time.time() - start_time))
+        print(f"✅ Report generated: {OUTPUT_FILE}")
+        print(f"⏱ Time taken: {elapsed}")
+
+    except NoCredentialsError:
+        print("❌ AWS credentials not found. Please configure your AWS credentials.")
+        sys.exit(1)
+    except ClientError as e:
+        print(f"❌ AWS API Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+        sys.exit(1)
